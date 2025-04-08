@@ -36,7 +36,7 @@ class RoleController extends Controller
         $role = Role::findOrFail($id); // Извлекаем роль по ID
         $roleDTO = new RoleDTO(
             $role->name,
-            $role->slug, // Предполагается, что в модели используется slug вместо code
+            $role->slug,
             $role->description,
             $role->created_by
         ); // Преобразуем модель Role в DTO

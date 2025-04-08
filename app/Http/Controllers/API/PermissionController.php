@@ -36,7 +36,8 @@ class PermissionController extends Controller
         $permission = Permission::findOrFail($id); // Извлекаем разрешение по ID
         $permissionDTO = new PermissionDTO(
             $permission->name,
-            $permission->slug, 
+            $permission->
+            , 
             $permission->description,
             $permission->created_by
         ); // Преобразуем модель Permission в DTO
