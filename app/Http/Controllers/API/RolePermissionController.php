@@ -1,0 +1,133 @@
+<?php
+
+namespace App\Http\Controllers\API;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\RolePermissionRequest\RolePermissionRequest;
+use App\Http\Resources\RolePermissionResource;
+use App\Models\RolePermission;
+use App\DTO\RolePermissionDTO\RolePermissionDTO;
+use App\DTO\RolePermissionDTO\RolePermissionCollectionDTO;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+
+class RolePermissionController extends Controller
+{
+    /**
+     * Получение всех связей для конкретной роли по ID роли.
+     */
+    public function showRolePermission($roleId)
+    {
+        // Извлекаем все связи для конкретной роли по role_id
+        $rolePermissions = RolePermission::where('role_id', $roleId)->get();
+
+        // Преобразуем коллекцию моделей RolePermission в массив DTO
+        $rolePermissionDTOs = $rolePermissions->map(function ($rolePermission) {
+            return new RolePermissionDTO(
+                $rolePermission->permission_id,
+                $rolePermission->role_id,
+                $rolePermission->created_by
+            );
+        })->toArray();
+
+        // Оборачиваем массив DTO в коллекцию RolePermissionCollectionDTO
+        $rolePermissionCollectionDTO = new RolePermissionCollectionDTO($rolePermissionDTOs);
+
+        // Возвращаем результат
+        return ($rolePermissionCollectionDTO->toArray() == null)
+            ? response()->json(['message' => 'Role and permission not found'], 404)
+            : $rolePermissionCollectionDTO->toArray();
+    }
+
+    /**
+     * Создание новой связи роли с разрешениями.
+     */
+    public function storeRolePermission(RolePermissionRequest $request)
+    {
+        DB::beginTransaction();
+
+        try {
+            // Получаем DTO из данных запроса
+            $rolePermissionDTO = $request->toDTO();
+
+            // Создаем новую связь роли с разрешением, используя данные из DTO
+            $rolePermission = RolePermission::create($rolePermissionDTO->toArray());
+
+            DB::commit(); // Подтверждаем транзакцию
+
+            return (new RolePermissionResource($rolePermission))->response()->setStatusCode(201);
+        } catch (\Exception $e) {
+            DB::rollBack(); // Откатываем транзакцию в случае ошибки
+            return response()->json(['message' => 'Failed to store role-permission association'], 500);
+        }
+    }
+
+    /**
+     * Жесткое удаление связи роли с разрешениями.
+     */
+    public function destroyRolePermission($id)
+    {
+        DB::beginTransaction();
+
+        try {
+            // Находим связь роли с разрешениями по ID
+            $rolePermission = RolePermission::find($id);
+
+            // Проверяем, существует ли связь
+            if (!$rolePermission) {
+                return response()->json(['message' => 'The permissions connection to the role was not found'], 404);
+            }
+
+            // Выполняем жесткое удаление
+            $rolePermission->forceDelete();
+
+            DB::commit(); // Подтверждаем транзакцию
+
+            return response()->json(['message' => 'The permissions connection to the role permanently deleted'], 200);
+        } catch (\Exception $e) {
+            DB::rollBack(); // Откатываем транзакцию в случае ошибки
+            return response()->json(['message' => 'Failed to delete role-permission connection'], 500);
+        }
+    }
+
+    /**
+     * Мягкое удаление связи роли с разрешениями.
+     */
+    public function softDeleteRolePermission($id)
+    {
+        // Находим связь роли с разрешениями по ID
+        $rolePermission = RolePermission::find($id);
+
+        // Проверяем, существует ли связь
+        if (!$rolePermission) {
+            return response()->json(['message' => 'The permissions connection to the role was not found'], 404);
+        }
+
+        // Устанавливаем `deleted_by` текущим пользователем перед мягким удалением
+        $rolePermission->deleted_by = Auth::id();
+        $rolePermission->save();
+
+        $rolePermission->delete(); // Использует soft delete
+        return response()->json(['message' => 'The permissions connection to the role soft deleted'], 200);
+    }
+
+    /**
+     * Восстановление мягко удаленной связи роли с разрешениями.
+     */
+    public function restoreRolePermission($id)
+    {
+        $rolePermission = RolePermission::onlyTrashed()->findOrFail($id);
+
+        // Проверяем, существует ли связь
+        if (!$rolePermission) {
+            return response()->json(['message' => 'The permissions connection to the role was not found'], 404);
+        }
+
+        // Сбрасываем поле `deleted_by`
+        $rolePermission->deleted_by = null;
+        $rolePermission->save();
+
+        $rolePermission->restore(); // Восстанавливаем запись
+        return response()->json(['message' => 'The permissions connection to the role restored'], 200);
+    }
+}
