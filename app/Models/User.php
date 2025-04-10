@@ -18,20 +18,37 @@ class User extends Authenticatable
         'email',
         'password',
         'birthday',
+        'is_two_fa_enabled',
+        'two_fa_code',
+        'two_fa_expires_at',
+        'two_fa_device_id',
     ];
 
     // Поля, скрытые при сериализации 
     protected $hidden = [
         'password',
-        // 'remember_token',
+        'two_fa_code', 
     ];
 
     // Приведение типов для полей 
     protected $casts = [
         // 'email_verified_at' => 'datetime',
         'birthday' => 'date',
+        'is_two_fa_enabled' => 'boolean',
+        'two_fa_expires_at' => 'datetime',
+        'last_request_time' => 'datetime',
     ];
 
+    /* 
+    Проверка наличия разрешения у пользователя через его роли 
+    */
+    public function hasPermission(string $permissionSlug): bool
+    {
+        return $this->roles()->whereNull('user_roles.deleted_at') // Фильтр на мягкое удаление
+        ->whereHas('permissions', function ($query) use ($permissionSlug) {
+            $query->where('slug', $permissionSlug);
+        })->exists();
+    }
     /* 
     Связь многие-ко-многим с таблицей roles через user_roles 
     */
@@ -40,15 +57,4 @@ class User extends Authenticatable
         return $this->belongsToMany(Role::class, 'user_roles');
     }
 
-    /* 
-    Проверка наличия разрешения у пользователя через его роли 
-    */
-    public function hasPermission(string $permissionName): bool
-    {
-        return $this->roles()
-        ->whereNull('user_roles.deleted_at') // Фильтр на мягкое удаление
-        ->whereHas('permissions', function ($query) use ($permissionName) {
-            $query->where('slug', $permissionName);
-        })->exists();
-    }
 }

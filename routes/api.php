@@ -8,17 +8,22 @@ use App\Http\Controllers\API\UserRoleController;
 use App\Http\Controllers\API\RolePermissionController;
 use App\Http\Middleware\CheckPermission;
 use App\Http\Controllers\API\ChangeLogController;
+use App\Http\Controllers\API\TwoFactorController;
 
 /* 
 Открытые маршруты для аутентификации 
 */
 Route::post('/auth/login', [AuthController::class, 'login']);
 Route::post('/auth/register', [AuthController::class, 'register']);
-
+Route::post('/2fa/confirm', [TwoFactorController::class, 'confirmCode']);
+Route::post('/2fa/request-new-code', [TwoFactorController::class, 'requestNewCode']);
 /* 
 Защищенные маршруты с проверкой токена 
 */
 Route::middleware(['auth.custom'])->group(function () {
+
+    Route::post('/2fa/toggle', [TwoFactorController::class, 'toggleTwoFactor']);
+
     /* 
     Управление аутентификацией 
     */

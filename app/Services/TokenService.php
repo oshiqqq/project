@@ -31,13 +31,25 @@ class TokenService
      */
     protected function checkTokenLimit(User $user): void
     {
-        $maxTokens = env('MAX_ACTIVE_TOKENS', 5); // Максимальное количество токенов из конфигурации
-        $activeTokensCount = UserToken::where('user_id', $user->id)->count(); // Подсчет токенов пользователя
-
+        $maxTokens = env('MAX_ACTIVE_TOKENS', 5);
+    
+        // Удаляем просроченные токены
+        UserToken::where('user_id', $user->id)
+            ->where('expires_at', '<', Carbon::now())
+            ->delete();
+    
+        // Подсчитываем оставшиеся активные токены
+        $activeTokensCount = UserToken::where('user_id', $user->id)->count();
+    
         if ($activeTokensCount >= $maxTokens) {
-            throw new HttpResponseException(response()->json([
-                'message' => 'The maximum number of active tokens has been exceeded.'
-            ], 403));
+            // Если все еще превышает лимит, удаляем самый старый токен
+            $oldestToken = UserToken::where('user_id', $user->id)
+                ->orderBy('expires_at', 'asc')
+                ->first();
+    
+            if ($oldestToken) {
+                $oldestToken->delete();
+            }
         }
     }
 
@@ -136,5 +148,22 @@ class TokenService
         $currentTime = Carbon::now();
 
         return $currentTime->gte($expiryTime);
+    }
+    
+    /**
+    * Генерирует временный токен для пользователя и сохраняет его в базе данных.=
+    */
+    public function generateTemporaryToken(User $user)
+    {
+        $temporaryToken = $this->createToken();
+
+        UserToken::create([
+            'user_id' => $user->id,
+            'token' => $temporaryToken,
+            'expires_at' => Carbon::now()->addMinutes((int)env('TEMP_TOKEN_LIFETIME', 5)),
+            'is_tmp' => 1, // Устанавливаем временный токен
+        ]);
+
+        return $temporaryToken;
     }
 }

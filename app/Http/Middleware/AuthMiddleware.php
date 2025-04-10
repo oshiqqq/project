@@ -25,7 +25,7 @@ class AuthMiddleware
     /**
      * Обрабатывает входящий запрос, проверяя токен авторизации.
      */
-    public function handle(Request $request, Closure $next): Response
+    public function handle(Request $request, Closure $next)
     {
         $token = $request->header('Authorization');
 
@@ -33,19 +33,26 @@ class AuthMiddleware
             return response()->json(['message' => 'Authorization token not provided'], 401);
         }
 
-        $token = str_replace('Bearer ', '', $token); // Удаляем префикс Bearer
+        $token = str_replace('Bearer ', '', $token);
         $userToken = UserToken::where('token', $token)->first();
 
         if (!$userToken) {
             return response()->json(['message' => 'Invalid token'], 401);
         }
 
+        // Проверка на истечение срока действия токена
         if ($this->tokenService->isTokenExpired($userToken)) {
             return response()->json(['message' => 'Token expired'], 401);
         }
 
-        Auth::setUser($userToken->user); // Устанавливаем пользователя в систему аутентификации
-        $request->merge(['user' => $userToken->user]); // Добавляем пользователя в запрос
+        // Проверка, если токен временный (is_tmp = 1)
+        if ($userToken->is_tmp) {
+            return response()->json(['message' => 'Temporary token. 2FA verification required.'], 403);
+        }
+
+        // Авторизация пользователя
+        Auth::setUser($userToken->user);
+        $request->merge(['user' => $userToken->user]);
 
         return $next($request);
     }

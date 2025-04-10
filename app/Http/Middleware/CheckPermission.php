@@ -15,11 +15,11 @@ class CheckPermission
     /**
      * Обрабатывает входящий запрос, проверяя наличие указанного разрешения.
      */
-    public function handle(Request $request, Closure $next, string $permissionCode): Response
+    public function handle(Request $request, Closure $next, string $permissionSlug): Response
     {
-        if (!$request->user()->hasPermission($permissionCode)) {
+        if (!$request->user()->hasPermission($permissionSlug)) {
             return response()->json([
-                'error' => "У вас нет доступа к данной операции. Необходимое разрешение: {$permissionCode}"
+                'error' => "У вас нет доступа к данной операции. Необходимое разрешение: {$permissionSlug}"
             ], 403);
         }
 
