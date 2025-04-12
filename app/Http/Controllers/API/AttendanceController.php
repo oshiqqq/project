@@ -1,5 +1,4 @@
 <?php
-
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
@@ -7,15 +6,15 @@ use Illuminate\Http\Request;
 use Maatwebsite\Excel\Facades\Excel;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
+use PhpOffice\PhpSpreadsheet\Calculation\Calculation;
 
 class AttendanceController extends Controller
 {
     /**
-     * Обрабатывает загрузку файла и извлекает данные.
+     * Метод загрузки
      */
     public function upload(Request $request)
     {
-        // Проверяем наличие файла в запросе
         if (!$request->hasFile('file')) {
             return response()->json(['error' => 'File not found'], 400);
         }
@@ -23,209 +22,363 @@ class AttendanceController extends Controller
         $file = $request->file('file');
 
         try {
-            // Преобразуем данные из Excel в массив
             $data = Excel::toArray([], $file)[0];
-            // Обрабатываем полученные данные
             $result = $this->processData($data);
             return response()->json($result);
         } catch (\Exception $e) {
-            // Логируем ошибку, если обработка файла не удалась
-            Log::error('Excel processing error: ' . $e->getMessage());
             return response()->json(['error' => 'Failed to process file: ' . $e->getMessage()], 500);
         }
     }
 
     /**
-     * Обрабатывает данные из Excel.
-     */
+    * Метод обрабатывает загруженные данные Excel и возвращает результаты обработки студентов и групп
+    */ 
     private function processData($data)
     {
-        // Проверяем, что данные в файле не пустые
         if (empty($data)) {
             return ['error' => 'No data found in Excel sheet'];
         }
 
-        // Инициализация переменных для групп, дат, времени и типов занятий
-        $groups = [];
-        $currentGroup = null;
+        // Определение колонок для посещений (AA - DT)
+        $startCol = 26; // AA - начальная колонка для данных о посещениях
+        $endCol = 116;  // DT - конечная колонка для данных о посещениях
+
+        // Извлекаем информацию о занятиях
+        $lessonInfo = $this->extractLessonInfo($data, $startCol, $endCol);
+
+        // Обрабатываем студентов
+        $groups = $this->processStudents($data, $lessonInfo, $startCol, $endCol);
+
+        return ['groups' => array_values($groups)];
+    }
+
+    /**
+     * Метод извлекает информацию о занятиях, датах и времени из Excel
+     */
+    private function extractLessonInfo($data, $startCol, $endCol)
+    {
+        $lessonGroupsSubgroups = [];
         $dates = [];
         $times = [];
-        $lessonTypes = [];
-        $studentsForAutomaticCredit = [];
 
-        // Определяем начальные и конечные колонки для обработки
-        $startCol = 26; // Колонка AA
-        $endCol = 116;  // Колонка DT (примерное количество колонок)
+        foreach (range($startCol, $endCol) as $col) {
+            // Группа и подгруппа (строка 2)
+            if (isset($data[1][$col])) {
+                $lessonGroupsSubgroups[$col] = $this->parseGroupAndSubgroup($data[1][$col]);
+            } else {
+                $lessonGroupsSubgroups[$col] = ['group' => null, 'subgroup' => 1];
+            }
 
-        // Обрабатываем типы занятий (строка 2)
-        foreach ($data[1] ?? [] as $col => $value) {
-            if ($col >= $startCol && $col <= $endCol) {
-                $lessonTypes[$col] = $value ?: 'Unknown';
+            // Даты (строка 3)
+            if (isset($data[2][$col])) {
+                $dates[$col] = $this->parseDate($data[2][$col]);
+            } else {
+                $dates[$col] = null;
+            }
+
+            // Время (строка 4, пока не используется)
+            if (isset($data[3][$col])) {
+                $times[$col] = $this->parseTime($data[3][$col]);
+            } else {
+                $times[$col] = null;
             }
         }
 
-        // Обрабатываем даты (строка 3)
-        foreach ($data[2] ?? [] as $col => $value) {
-            if ($col >= $startCol && $col <= $endCol) {
-                // Преобразуем числовые значения в дату
-                if (is_numeric($value) && (int)$value > 0) {
-                    $dates[$col] = Carbon::create(1900, 1, 1)->addDays((int)$value - 2)->format('d.m.Y');
-                } elseif (!empty($value)) {
-                    try {
-                        $dates[$col] = Carbon::parse($value)->format('d.m.Y');
-                    } catch (\Exception $e) {
-                        // Логируем ошибку в случае неудачи
-                        Log::warning('Failed to parse date: ' . $value);
-                        $dates[$col] = '01.01.1970'; // Возвращаем дефолтную дату
-                    }
+        return compact('lessonGroupsSubgroups', 'dates', 'times');
+    }
+
+    /**
+    * Метод парсит дату из значения ячейки Excel
+    */ 
+    private function parseDate($value)
+    {
+        if (is_numeric($value) && (int)$value > 0) {
+            return Carbon::create(1900, 1, 1)->addDays((int)$value - 2)->format('Y-m-d');
+        } elseif (!empty($value)) {
+            try {
+                return Carbon::parse($value)->format('Y-m-d');
+            } catch (\Exception $e) {
+                return '1970-01-01';
+            }
+        }
+        return null;
+    }
+
+    /**
+    * Метод парсит время из значения ячейки Excel
+    */ 
+    private function parseTime($value)
+    {
+        if (!empty($value)) {
+            try {
+                if (is_numeric($value)) {
+                    $hours = floor($value * 24);
+                    $minutes = round(($value * 24 - $hours) * 60);
+                    return sprintf('%02d:%02d', $hours, $minutes);
                 } else {
-                    $dates[$col] = null;
+                    return Carbon::createFromFormat('H:i', $value)->format('H:i');
+                }
+            } catch (\Exception $e) {
+                return '00:00';
+            }
+        }
+        return null;
+    }
+
+    /**
+    * Метод парсит группу и подгруппу из строки
+    */ 
+    private function parseGroupAndSubgroup($value)
+    {
+        if (preg_match('/(\d{4}б)\/(\d)/', $value, $matches)) {
+            return [
+                'group' => $matches[1],
+                'subgroup' => (int)$matches[2]
+            ];
+        }
+        return ['group' => null, 'subgroup' => 1];
+    }
+
+    /**
+    * Метод обрабатывает данные студентов, группируя их по группам и рассчитывая посещаемость
+    */ 
+    private function processStudents($data, $lessonInfo, $startCol, $endCol)
+    {
+        $groups = [];
+        
+        // Определяем границы групп в таблице
+        $groupBoundaries = [
+            '1111б' => [
+                'start' => 6,   // Строки A7-A32 (индексы 6-31)
+                'end' => 31,
+                'labs_col' => 5,     // Колонка F (индекс 5)
+                'credit_col' => 25,  // Колонка Z (индекс 25)
+                'min_labs' => 6
+            ],
+            '1511б' => [
+                'start' => 33,  // Строки A34-A58 (индексы 33-57)
+                'end' => 57,
+                'labs_col' => 5,     // Колонка F (индекс 5)
+                'credit_col' => 25,  // Колонка Z (индекс 25)
+                'min_labs' => 9
+            ]
+        ];
+    
+        foreach ($groupBoundaries as $groupName => $boundary) {
+            $groups[$groupName] = [
+                'group_name' => $groupName,
+                'students' => [],
+                'result' => ['success' => 0, 'unsuccessfully' => 0]
+            ];
+    
+            // Обрабатываем студентов в границах группы
+            for ($rowIndex = $boundary['start']; $rowIndex <= $boundary['end']; $rowIndex++) {
+                if (empty($data[$rowIndex][0])) continue; // Пропускаем пустые строки
+    
+                $name = trim($data[$rowIndex][0]); // ФИО студента
+                $subgroup = !empty($data[$rowIndex][2]) && is_numeric($data[$rowIndex][2]) 
+                    ? (int)$data[$rowIndex][2] 
+                    : 1; // Подгруппа (по умолчанию 1)
+                
+                // Получаем всю строку для расчета лабораторных
+                $rowData = $data[$rowIndex];
+
+                // Рассчитываем количество сданных лабораторных вручную
+                $submittedLabs = $this->calculateSubmittedLabs($rowData, $rowIndex, $startCol, $endCol);
+                
+                // Проверяем автоматический зачет из колонки Z
+                $creditValue = $data[$rowIndex][$boundary['credit_col']] ?? '';
+                $hasAutomaticCredit = $this->hasAutomaticCredit($creditValue);
+    
+                // Рассчитываем посещаемость
+                $attendanceInfo = $this->calculateAttendance($rowData, $lessonInfo, $startCol, $endCol, $groupName);
+                $visitedCount = $attendanceInfo['visitedCount'];
+                $totalClasses = $attendanceInfo['totalClasses'];
+                $visitPercent = $totalClasses > 0 ? round(($visitedCount / $totalClasses) * 100, 2) : 0;
+    
+                // Определяем зачет (автоматический имеет приоритет)
+                $result = $hasAutomaticCredit || ($visitPercent >= 80 && $submittedLabs >= $boundary['min_labs']);
+    
+                // Добавляем студента
+                $groups[$groupName]['students'][] = [
+                    'name' => $name,
+                    'subgroup' => $subgroup,
+                    'attendance' => $attendanceInfo['attendance'],
+                    'visit_percent' => $visitPercent,
+                    'submitted_labs' => $submittedLabs,
+                    'result' => $result,
+                    'automatic_credit' => $hasAutomaticCredit
+                ];
+    
+                // Обновляем статистику
+                if ($result) {
+                    $groups[$groupName]['result']['success']++;
+                } else {
+                    $groups[$groupName]['result']['unsuccessfully']++;
+                }
+            }
+        }
+    
+        return $groups;
+    }
+    
+    /**
+     * Метод рассчитывает количество сданных лабораторных работ на основе специальных маркеров
+     */ 
+    private function calculateSubmittedLabs($rowData, $rowIndex, $startCol, $endCol)
+    {
+        $countCheck = 0;
+        $countBird = 0;
+        $countSad = 0;
+        $countFire = 0;
+        $countCheckT = 0;
+
+        // Проходим по колонкам с AA до DT (индексы от $startCol до $endCol)
+        for ($col = $startCol; $col <= $endCol; $col++) {
+            if (!isset($rowData[$col])) continue;
+
+            $value = trim((string)$rowData[$col]);
+
+            // Считаем каждый маркер
+            if (strpos($value, '✅') !== false) $countCheck++;
+            if ($value === '🐤') $countBird++;
+            if ($value === '🥲') $countSad++;
+            if (strpos($value, '🔥') !== false) $countFire++;
+            if (strpos($value, '✅T') !== false) $countCheckT++;
+        }
+
+        // Получаем значение из колонки V (индекс 21, если A=0, B=1, ..., V=21)
+        $vColumnIndex = 21;
+        $vValue = isset($rowData[$vColumnIndex]) ? trim((string)$rowData[$vColumnIndex]) : '0';
+
+        // Вычисляем по формуле
+        $result = $countCheck + ($countBird / 20) + ($countSad / 2) + ($countFire * 1.5) - (is_numeric($vValue) ? (float)$vValue : 0) + ($countCheckT * 0.3);
+
+        return max(0, round($result));
+    }
+    
+    /**
+     * Обработка автоматического зачёта.
+     * Метод проверяет различные форматы данных для определения автоматического зачёта.
+     */
+    private function hasAutomaticCredit($value)
+    {   
+        if (empty($value)) {
+            return false;
+        }
+
+        $value = strtolower(trim($value));
+
+        // Текстовый автоматический зачет
+        if (in_array($value, ['зачет', 'зачёт'])) {
+            return true;
+        }
+
+        // Обработка значений с символом процента, например "100%"
+        if (substr($value, -1) === '%') {
+            $number = floatval(substr($value, 0, -1));
+            if ($number >= 100) {
+                return true;
+            }
+        }
+
+        // Обработка числовых значений
+        if (is_numeric($value)) {
+            $number = floatval($value);
+            // Если число меньше 10, считаем его соотношением (например, 1 означает 100%); иначе – абсолютное значение
+            if ($number < 10) {
+                if ($number >= 1.0) {
+                    return true;
+                }
+            } else {
+                if ($number >= 100) {
+                    return true;
                 }
             }
         }
 
-        // Обрабатываем время (строка 4)
-        foreach ($data[3] ?? [] as $col => $value) {
-            if ($col >= $startCol && $col <= $endCol) {
-                if (!empty($value)) {
-                    try {
-                        // Преобразуем значение времени в формат HH:MM
-                        if (is_numeric($value)) {
-                            $hours = floor($value * 24);
-                            $minutes = round(($value * 24 - $hours) * 60);
-                            $times[$col] = sprintf('%02d:%02d', $hours, $minutes);
-                        } else {
-                            $times[$col] = Carbon::createFromFormat('H:i', $value)->format('H:i');
+        // Если значение начинается с "=" – пробуем вычислить формулу
+        if (strpos($value, '=') === 0) {
+            try {
+                $calculatedValue = Calculation::getInstance()->calculateFormula($value);
+                if (is_numeric($calculatedValue)) {
+                    $number = floatval($calculatedValue);
+                    // Аналогичная логика: если число меньше 10 – соотношение, иначе – абсолютное значение
+                    if ($number < 10) {
+                        if ($number >= 1.0) {
+                            return true;
                         }
-                    } catch (\Exception $e) {
-                        // Логируем ошибку при обработке времени
-                        Log::warning('Failed to parse time: ' . $value);
-                        $times[$col] = '00:00'; // Возвращаем дефолтное значение
+                    } else {
+                        if ($number >= 100) {
+                            return true;
+                        }
                     }
-                } else {
-                    $times[$col] = null;
                 }
+            } catch (\Exception $e) {
+                Log::error('Formula calculation error', [
+                    'formula' => $value,
+                    'error' => $e->getMessage()
+                ]);
             }
         }
+        return false;
+    }
 
-        // Обрабатываем данные учеников (начиная с 7 строки)
-        foreach ($data as $rowIndex => $row) {
-            // Пропускаем первые 6 строк, так как они содержат информацию о датах и типах
-            if ($rowIndex < 6) continue;
-
-            // Определяем группу, если она была указана
-            if (!empty($row[0]) && preg_match('/^\d{4}б$/', $row[0])) {
-                $currentGroup = $row[0];
+    /**
+     * Метод рассчитывает посещаемость студента на основе данных о занятиях
+     */ 
+    private function calculateAttendance($row, $lessonInfo, $startCol, $endCol, $studentGroup)
+    {
+        $attendance = [];
+        $visitedCount = 0;
+        $totalClasses = 0;
+    
+        foreach (range($startCol, $endCol) as $col) {
+            if (!isset($lessonInfo['lessonGroupsSubgroups'][$col]) || 
+                !isset($lessonInfo['dates'][$col])) {
                 continue;
             }
-
-            // Пропускаем строки, где нет данных
-            if (empty($row[0])) continue;
-
-            // Извлекаем имя, подгруппу и информацию о зачете
-            $name = trim($row[0]);
-            $subgroup = !empty($row[2]) ? (int)$row[2] : 1;
-            $hasCredit = !empty($row[25]) && $row[25] === 'Зачет';
-
-            // Подсчитываем количество выполненных лабораторных работ
-            $submittedLabs = 0;
-            $totalLabs = 12; // Общее количество лабораторных
-
-            // Проверка данных о лабораторных работах
-            if (isset($row[5]) && !empty($row[5])) {
-                if (is_numeric($row[5])) {
-                    $submittedLabs = (int)$row[5];
-                } elseif (preg_match('/\d+/', $row[5], $matches)) {
-                    $submittedLabs = (int)$matches[0]; // Извлекаем число из строки
-                } else {
-                    Log::warning('Invalid labs data in column F for student ' . $name . ': ' . $row[5]);
-                }
+    
+            $lessonGroup = $lessonInfo['lessonGroupsSubgroups'][$col]['group'];
+            $lessonSubgroup = $lessonInfo['lessonGroupsSubgroups'][$col]['subgroup'];
+    
+            // Учитываем только занятия своей группы
+            if ($lessonGroup !== $studentGroup) {
+                continue;
             }
-
-            // Инициализация переменных для посещаемости
-            $attendance = [];
-            $visitedCount = 0;
-            $ownClasses = 0;
-
-            // Проходим по всем типам занятий и проверяем посещаемость
-            foreach ($lessonTypes as $col => $lessonType) {
-                if (!isset($dates[$col])) continue;
-
-                // Проверка, посещал ли студент занятие
-                $visitMark = $row[$col] ?? '';
-                $isVisited = in_array($visitMark, ['+', '👌', '🙋🏻', '😎']) || 
-                             preg_match('/\d+✅/', $visitMark) || 
-                             strpos($visitMark, '✅') !== false;
-
-                // Определение типа занятия (лекция или лабораторная)
-                $type = strpos($lessonType, 'ЛК') !== false ? 'lect' : 'lab';
-
-                // Определение подгруппы занятия
-                $lessonSubgroup = 1;
-                if (preg_match('/\/(\d+)$/', $lessonType, $matches)) {
-                    $lessonSubgroup = (int)$matches[1];
-                }
-
-                // Учитываем только занятия в своей подгруппе для подсчета 80%
-                if ($lessonSubgroup == $subgroup) {
-                    $ownClasses++;
-                    if ($isVisited) {
-                        $visitedCount++;
-                    }
-                }
-
-                // Добавляем информацию о посещаемости
-                $attendance[] = [
-                    'date' => $dates[$col] ?? '01.01.1970',
-                    'time' => $times[$col] ?? '00:00',
-                    'type' => $type,
-                    'number' => $col - $startCol,
-                    'subgroup' => $lessonSubgroup,
-                    'visit' => $isVisited
-                ];
+    
+            $totalClasses++;
+            $visitMark = $row[$col] ?? '';
+            $isVisited = $this->isVisitedMark($visitMark);
+    
+            if ($isVisited) {
+                $visitedCount++;
             }
-
-            // Рассчитываем процент посещаемости и выполненных лабораторных
-            $visitPercent = $ownClasses ? round(($visitedCount / $ownClasses) * 100, 2) : 0;
-            $successLabsPercent = $totalLabs ? round(($submittedLabs / $totalLabs) * 100, 2) : 0;
-
-            // Проверка, засчитан ли студент (автоматический зачет)
-            $result = $hasCredit || ($visitPercent >= 80 && $submittedLabs >= 4);
-
-            // Инициализация группы, если она еще не существует
-            if (!isset($groups[$currentGroup])) {
-                $groups[$currentGroup] = [
-                    'group_name' => $currentGroup,
-                    'students' => [],
-                    'result' => ['success' => 0, 'unsuccessfully' => 0]
-                ];
-            }
-
-            // Добавление студента в группу
-            $groups[$currentGroup]['students'][] = [
-                'name' => $name,
-                'subgroup' => $subgroup,
-                'leasons' => $attendance,
-                'visit_percent' => $visitPercent,
-                'success_labs_percent' => $successLabsPercent,
-                'success_labs' => $submittedLabs,
-                'result' => $result
+    
+            $attendance[] = [
+                'date' => $lessonInfo['dates'][$col] ?? '1970-01-01',
+                'subgroup' => $lessonSubgroup,
+                'group' => $lessonGroup,
+                'visit' => $isVisited,
+                'mark' => $visitMark
             ];
-
-            // Обновляем количество студентов с автоматическим зачетом
-            if ($result) {
-                $studentsForAutomaticCredit[] = $name;
-                $groups[$currentGroup]['result']['success']++;
-            } else {
-                $groups[$currentGroup]['result']['unsuccessfully']++;
-            }
         }
+    
+        return compact('attendance', 'visitedCount', 'totalClasses');
+    }
 
-        // Возвращаем итоговые данные
-        return [
-            'groups' => array_values($groups),
-            'studentsForAutomaticCredit' => $studentsForAutomaticCredit,
-            'totalStudentsWithAutomaticCredit' => count($studentsForAutomaticCredit)
-        ];
+    /**
+     * Метод определяет, является ли маркер посещения действительным (студент присутствовал)
+     */ 
+    private function isVisitedMark($visitMark)
+    {
+        $visitMark = trim((string)$visitMark);
+        return !empty($visitMark) && (
+            $visitMark === '+' || 
+            $visitMark === '✅' || 
+            $visitMark === '🙋🏻' || 
+            strpos($visitMark, '😎') !== false || 
+            $visitMark === '👌'
+        );
     }
 }
