@@ -7,118 +7,197 @@ use App\Models\Permission;
 use App\Http\Requests\PermissionRequest\CreatePermissionRequest;
 use App\Http\Requests\PermissionRequest\UpdatePermissionRequest;
 use App\Http\Resources\PermissionResource;
+use App\Http\Resources\ChangeLogResource;
 use App\DTO\PermissionDTO\PermissionDTO;
 use App\DTO\PermissionDTO\PermissionCollectionDTO;
+use App\DTO\ChangeLogDTO\ChangeLogDTO;
+use App\DTO\ChangeLogDTO\ChangeLogCollectionDTO;
 use Illuminate\Support\Facades\Auth;
+use App\Models\ChangeLog;
+use Illuminate\Support\Facades\DB;
 
-/**
- * Контроллер для управления разрешениями через API.
- * Реализует CRUD-операции, мягкое удаление и восстановление разрешений.
- */
 class PermissionController extends Controller
 {
-    /**
-     * Возвращает список всех разрешений.
-     */
+    /** 
+    *Получение списка всех разрешений
+    */ 
     public function indexPermission()
     {
-        $permissionList = Permission::all()->toArray(); // Получаем массив разрешений из базы данных
-        $permissionCollectionDTO = new PermissionCollectionDTO($permissionList); // Создаем коллекцию DTO
+        $permissions = Permission::all()->toArray(); // Получаем все разрешения из базы данных
+        $permissionCollectionDTO = new PermissionCollectionDTO($permissions); // Преобразуем в DTO коллекцию
 
-        return response()->json($permissionCollectionDTO->toArray()); // Возвращаем JSON
+        return response()->json($permissionCollectionDTO->toArray()); // Возвращаем данные в формате JSON
     }
 
-    /**
-     * Возвращает данные конкретного разрешения по его ID.
-     */
+    /** 
+    * Получение конкретного разрешения по ID
+    */
     public function showPermission($id)
     {
-        $permission = Permission::findOrFail($id); // Извлекаем разрешение по ID
+        // Извлекаем разрешение по id
+        $permission = Permission::findOrFail($id);
+        // Преобразуем модель разрешения в DTO
         $permissionDTO = new PermissionDTO(
             $permission->name,
-            $permission->
-            , 
             $permission->description,
+            $permission->slug,
             $permission->created_by
-        ); // Преобразуем модель Permission в DTO
+        );
 
-        return new PermissionResource($permissionDTO); // Возвращаем DTO через PermissionResource
+        // Возвращаем DTO через PermissionResource
+        return new PermissionResource($permissionDTO);
     }
 
-    /**
-     * Создает новое разрешение на основе данных запроса.
-     */
+    /** 
+    * Создание нового разрешения
+    */ 
     public function storePermission(CreatePermissionRequest $request)
     {
-        $permissionDTO = $request->toDTO(); // Получаем DTO из данных запроса
-        $permission = Permission::create($permissionDTO->toArray()); // Создаем новое разрешение
+        DB::beginTransaction(); // Начинаем транзакцию
 
-        return (new PermissionResource($permission))->response()->setStatusCode(201);
+        try {
+            // Преобразуем данные запроса в DTO
+            $permissionDTO = $request->toDTO();
+
+            // Создаем разрешение в базе данных, используя данные из DTO
+            $permission = Permission::create($permissionDTO->toArray());
+
+            DB::commit(); // Подтверждаем транзакцию
+
+            // Возвращаем созданное разрешение с кодом ответа 201
+            return (new PermissionResource($permission))->response()->setStatusCode(201);
+        } catch (\Exception $e) {
+            DB::rollBack(); // Откатываем транзакцию в случае ошибки
+            return response()->json(['message' => 'Failed to store permission'], 500);
+        }
     }
 
-    /**
-     * Обновляет существующее разрешение на основе данных запроса.
-     */
+    /** 
+    * Обновление существующего разрешения
+    */ 
     public function updatePermission(UpdatePermissionRequest $request, $id)
     {
-        $permission = Permission::findOrFail($id); // Находим разрешение по ID
-        $permissionDTO = $request->toPermissionDTO(); 
-        $permission->update($permissionDTO->toArray()); // Обновляем данные разрешения
+        DB::beginTransaction(); // Начинаем транзакцию
 
-        return response()->json(new PermissionResource($permission), 200);
+        try {
+            // Находим разрешение по ID
+            $permission = Permission::findOrFail($id);
+            // Получаем DTO из запроса и обновляем разрешение
+            $permissionDTO = $request->toPermissionDTO();
+            $permission->update($permissionDTO->toArray());
+
+            DB::commit(); // Подтверждаем транзакцию
+
+            // Возвращаем обновленное разрешение с кодом ответа 200
+            return response()->json(new PermissionResource($permission), 200);
+        } catch (\Exception $e) {
+            DB::rollBack(); // Откатываем транзакцию в случае ошибки
+            return response()->json(['message' => 'Failed to update permission'], 500);
+        }
     }
 
     /**
-     * Выполняет жесткое удаление разрешения по ID.
-     */
+    *Жесткое удаление разрешения по ID
+    */ 
     public function destroyPermission($id)
     {
-        $permission = Permission::find($id); // Находим разрешение по ID
+        DB::beginTransaction(); // Начинаем транзакцию
 
-        if (!$permission) {
-            return response()->json(['message' => 'Permission not found'], 404);
+        try {
+            // Находим разрешение по ID
+            $permission = Permission::find($id);
+
+            // Проверяем, существует ли разрешение
+            if (!$permission) {
+                return response()->json(['message' => 'Permission not found'], 404);
+            }
+
+            // Выполняем жесткое удаление
+            $permission->forceDelete();
+
+            DB::commit(); // Подтверждаем транзакцию
+
+            // Возвращаем сообщение об успешном удалении с кодом ответа 200
+            return response()->json(['message' => 'Permission permanently deleted'], 200);
+        } catch (\Exception $e) {
+            DB::rollBack(); // Откатываем транзакцию в случае ошибки
+            return response()->json(['message' => 'Failed to delete permission'], 500);
         }
-
-        $permission->forceDelete(); // Выполняем жесткое удаление
-
-        return response()->json(['message' => 'Permission permanently deleted'], 200);
     }
 
     /**
-     * Выполняет мягкое удаление разрешения по ID.
-     */
+    * Мягкое удаление разрешения
+    */
     public function softDeletePermission($id)
     {
-        $permission = Permission::find($id); // Находим разрешение по ID
-
+        // Находим разрешение по ID
+        $permission = Permission::find($id);
+        // Проверяем, существует ли разрешение
         if (!$permission) {
             return response()->json(['message' => 'Permission not found'], 404);
         }
 
-        $permission->deleted_by = Auth::id(); // Устанавливаем текущего пользователя как удалившего
+        // Устанавливаем `deleted_by` текущим пользователем перед мягким удалением
+        $permission->deleted_by = Auth::id();
         $permission->save();
 
-        $permission->delete(); // Выполняем мягкое удаление
+        // Выполняем мягкое удаление
+        $permission->delete();
 
+        // Возвращаем сообщение об успешном мягком удалении
         return response()->json(['message' => 'Permission soft deleted'], 200);
     }
 
-    /**
-     * Восстанавливает мягко удаленное разрешение по ID.
-     */
+    /** 
+    *Восстановление мягко удаленного разрешения
+    */ 
     public function restorePermission($id)
     {
-        $permission = Permission::onlyTrashed()->findOrFail($id); // Находим удаленное разрешение по ID
+        // Ищем удаленное разрешение
+        $permission = Permission::onlyTrashed()->findOrFail($id);
 
+        // Проверяем, существует ли разрешение
         if (!$permission) {
             return response()->json(['message' => 'Permission not found'], 404);
         }
 
-        $permission->deleted_by = null; // Сбрасываем поле удаления
+        // Сбрасываем поле `deleted_by`
+        $permission->deleted_by = null;
         $permission->save();
 
-        $permission->restore(); // Восстанавливаем разрешение
+        // Восстанавливаем разрешение
+        $permission->restore();
 
+        // Возвращаем сообщение об успешном восстановлении
         return response()->json(['message' => 'Permission restored'], 200);
+    }
+
+    /**
+    * Получение истории изменения разрешения по ID
+    */ 
+    public function permissionStory($entityId)
+    {
+        // Извлекаем все записи истории изменений для разрешения по entity_id
+        $permissions = ChangeLog::where('entity_type', 'permissions')
+            ->where('entity_id', $entityId)
+            ->get();
+
+        // Преобразуем записи изменений в коллекцию DTO
+        $permissionsDTOs = $permissions->map(function ($permissionLog) {
+            return new ChangeLogDTO(
+                $permissionLog->entity_type,
+                $permissionLog->entity_id,
+                $permissionLog->before,
+                $permissionLog->after,
+                $permissionLog->created_by,
+            );
+        })->toArray();
+
+        // Создаем коллекцию изменений и возвращаем ее в ответ
+        $changeLogCollectionDTO = new ChangeLogCollectionDTO($permissionsDTOs);
+
+        return ($changeLogCollectionDTO->toArray() == null)
+            ? response()->json(['message' => 'Permission not found'], 404)
+            : response()->json(new ChangeLogResource($changeLogCollectionDTO->toArray()), 200);
     }
 }

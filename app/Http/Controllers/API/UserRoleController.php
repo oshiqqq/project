@@ -6,110 +6,164 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\UserRoleRequest\UserRoleRequest;
 use App\Http\Resources\UserResource;
 use App\Http\Resources\UserRoleResource;
+use App\Http\Resources\ChangeLogResource;
 use App\Models\User;
 use App\Models\UserRole;
+use App\Models\ChangeLog;
 use App\DTO\UserDTO\UserCollectionDTO;
 use App\DTO\UserDTO\UserDTO;
+use App\DTO\ChangeLogDTO\ChangeLogDTO;
+use App\DTO\ChangeLogDTO\ChangeLogCollectionDTO;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
-/**
- * Контроллер для управления связками пользователей и ролей, а также получения данных пользователей через API.
- * Реализует получение списка пользователей, создание, удаление и восстановление связок.
- */
+
 class UserRoleController extends Controller
 {
     /**
-     * Возвращает список всех пользователей.
+     * Получение списка пользователей
      */
-    public function indexUser()
+    public function UserCollection()
     {
-        $userList = User::all()->toArray(); // Получаем массив пользователей из базы данных
-        $userCollectionDTO = new UserCollectionDTO($userList); // Создаем коллекцию DTO
+        $users = User::all()->toArray(); // Получаем массив ролей из базы данных
+        $userCollectionDTO = new UserCollectionDTO($users); // Создаем коллекцию DTO
 
         return response()->json($userCollectionDTO->toArray()); // Возвращаем JSON
     }
 
     /**
-     * Возвращает данные конкретного пользователя по его ID.
+     * Получение конкретного пользователя по ID
      */
     public function showUser($id)
     {
-        $user = User::findOrFail($id); // Извлекаем пользователя по ID
+        // Извлекаем роль по id
+        $user = User::findOrFail($id);
+        // Преобразуем модель Role в DTO
         $userDTO = new UserDTO(
             $user->id,
             $user->username,
             $user->email,
             $user->birthday
-        ); // Преобразуем модель User в DTO
+        );
 
-        return new UserResource($userDTO); // Возвращаем DTO через UserResource
+        // Возвращаем DTO через RoleResource
+        return new UserResource($userDTO);
     }
 
     /**
-     * Создает новую связку пользователя и роли на основе данных запроса.
+     * Создание новой связи пользователя и роли
      */
     public function storeUserRole(UserRoleRequest $request)
     {
-        $userRoleDTO = $request->toDTO(); // Получаем DTO из данных запроса
-        $userRoleLink = UserRole::create($userRoleDTO->toArray()); // Создаем новую связку
+        DB::beginTransaction(); // Начинаем транзакцию
 
-        return response()->json([
-            'message' => 'User role created successfully',
-            'data' => (new UserRoleResource($userRoleLink))->resolve()
-        ], 201);
+        try {
+            // Получаем DTO из данных запроса
+            $userRoleDTO = $request->toDTO();
+
+            // Создаем новую роль, используя данные из DTO
+            $userRole = UserRole::create($userRoleDTO->toArray());
+
+            DB::commit(); // Подтверждаем транзакцию
+
+            return (new UserRoleResource($userRole))->response()->setStatusCode(201);
+        } catch (\Exception $e) {
+            DB::rollBack(); // Откатываем транзакцию в случае ошибки
+            return response()->json(['message' => 'Failed to store user-role association'], 500);
+        }
     }
 
     /**
-     * Выполняет жесткое удаление связки пользователя и роли по ID.
+     * Жесткое удаление связи пользователя и роли
      */
     public function destroyUserRole($id)
     {
-        $userRoleLink = UserRole::find($id); // Находим связку по ID
+        DB::beginTransaction();
 
-        if (!$userRoleLink) {
-            return response()->json(['message' => 'The users connection to the role was not found'], 404);
+        try {
+            // Находим связь пользователя и роли по ID
+            $userRole = UserRole::find($id);
+
+            if (!$userRole) {
+                return response()->json(['message' => 'The user-role connection was not found'], 404);
+            }
+
+            // Выполняем жесткое удаление
+            $userRole->forceDelete();
+
+            DB::commit();
+
+            return response()->json(['message' => 'The user-role connection permanently deleted'], 200);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json(['message' => 'Failed to delete user-role connection'], 500);
         }
-
-        $userRoleLink->forceDelete(); // Выполняем жесткое удаление
-
-        return response()->json(['message' => 'The users connection to the role permanently deleted'], 200);
     }
 
     /**
-     * Выполняет мягкое удаление связки пользователя и роли по ID.
+     * Мягкое удаление связи пользователя и роли
      */
     public function softDeleteUserRole($id)
     {
-        $userRoleLink = UserRole::find($id); // Находим связку по ID
-
-        if (!$userRoleLink) {
+        // Находим роль по ID
+        $userRole = UserRole::find($id);
+        // Проверяем, существует ли роль
+        if (!$userRole) {
             return response()->json(['message' => 'The users connection to the role was not found'], 404);
         }
 
-        $userRoleLink->deleted_by = Auth::id(); // Устанавливаем текущего пользователя как удалившего
-        $userRoleLink->save();
+        // Устанавливаем `deleted_by` текущим пользователем перед мягким удалением
+        $userRole->deleted_by = Auth::id();
+        $userRole->save();
 
-        $userRoleLink->delete(); // Выполняем мягкое удаление
-
+        $userRole->delete(); // Использует soft delete
         return response()->json(['message' => 'The users connection to the role soft deleted'], 200);
     }
 
     /**
-     * Восстанавливает мягко удаленную связку пользователя и роли по ID.
+     * Восстановление мягко удаленной связи пользователя и роли
      */
     public function restoreUserRole($id)
     {
-        $userRoleLink = UserRole::onlyTrashed()->findOrFail($id); // Находим удаленную связку по ID
-
-        if (!$userRoleLink) {
+        $userRole = UserRole::onlyTrashed()->findOrFail($id);
+        // Проверяем, существует ли роль
+        if (!$userRole) {
             return response()->json(['message' => 'The users connection to the role was not found'], 404);
         }
 
-        $userRoleLink->deleted_by = null; // Сбрасываем поле удаления
-        $userRoleLink->save();
+        // Сбрасываем поле `deleted_by`
+        $userRole->deleted_by = null;
+        $userRole->save();
 
-        $userRoleLink->restore(); // Восстанавливаем связку
-
+        $userRole->restore();
         return response()->json(['message' => 'The users connection to the role restored'], 200);
+    }
+
+    /**
+     * Получение истории изменения записи пользователя по id
+     */
+    public function userStory($entityId)
+    {
+        // Извлекаем все связи для конкретной роли по role_id
+        $users = ChangeLog::where('entity_type', 'users')
+            ->where('entity_id', $entityId)
+            ->get();
+
+        // Преобразуем коллекцию моделей RolePermission в массив DTO
+        $usersDTOs = $users->map(function ($userLog) {
+            return new ChangeLogDTO(
+                $userLog->entity_type,
+                $userLog->entity_id,
+                $userLog->before,
+                $userLog->after,
+                $userLog->created_by,
+            );
+        })->toArray();
+
+        // Оборачиваем массив DTO в коллекцию RolePermissionCollectionDTO
+        $changeLogCollectionDTO = new ChangeLogCollectionDTO($usersDTOs);
+        return ($changeLogCollectionDTO->toArray() == null)
+            ? response()->json(['message' => 'User not found'], 404)
+            : response()->json(new ChangeLogResource($changeLogCollectionDTO->toArray()), 200);
     }
 }

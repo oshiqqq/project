@@ -4,120 +4,188 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\Role;
+use App\Models\ChangeLog;
 use App\Http\Requests\RoleRequest\CreateRoleRequest;
 use App\Http\Requests\RoleRequest\UpdateRoleRequest;
 use App\Http\Resources\RoleResource;
 use App\DTO\RoleDTO\RoleDTO;
 use App\DTO\RoleDTO\RoleCollectionDTO;
+use App\DTO\ChangeLogDTO\ChangeLogDTO;
+use App\DTO\ChangeLogDTO\ChangeLogCollectionDTO;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use App\Http\Resources\ChangeLogResource;
 
-/**
- * Контроллер для управления ролями через API.
- * Реализует CRUD-операции, мягкое удаление и восстановление ролей.
- */
 class RoleController extends Controller
 {
     /**
-     * Возвращает список всех ролей.
+     * Получение списка ролей
      */
     public function indexRole()
     {
-        $roleList = Role::all()->toArray(); // Получаем массив ролей из базы данных
-        $roleCollectionDTO = new RoleCollectionDTO($roleList); // Создаем коллекцию DTO
+        $roles = Role::all()->toArray(); // Получаем массив ролей из базы данных
+        $roleCollectionDTO = new RoleCollectionDTO($roles); // Создаем коллекцию DTO
 
         return response()->json($roleCollectionDTO->toArray()); // Возвращаем JSON
     }
 
     /**
-     * Возвращает данные конкретной роли по ее ID.
+     * Получение конкретной роли по ID
      */
     public function showRole($id)
     {
-        $role = Role::findOrFail($id); // Извлекаем роль по ID
+        // Извлекаем роль по id
+        $role = Role::findOrFail($id);
+        // Преобразуем модель Role в DTO
         $roleDTO = new RoleDTO(
             $role->name,
-            $role->slug,
             $role->description,
+            $role->slug,
             $role->created_by
-        ); // Преобразуем модель Role в DTO
+        );
 
-        return new RoleResource($roleDTO); // Возвращаем DTO через RoleResource
+        // Возвращаем DTO через RoleResource
+        return new RoleResource($roleDTO);
     }
 
     /**
-     * Создает новую роль на основе данных запроса.
+     * Создание новой роли
      */
     public function storeRole(CreateRoleRequest $request)
     {
-        $roleDTO = $request->toDTO(); // Получаем DTO из данных запроса
-        $role = Role::create($roleDTO->toArray()); // Создаем новую роль
+        DB::beginTransaction(); // Начинаем транзакцию
 
-        return (new RoleResource($role))->response()->setStatusCode(201);
+        try {
+            // Получаем DTO из данных запроса
+            $roleDTO = $request->toDTO();
+
+            // Создаем новую роль, используя данные из DTO
+            $role = Role::create($roleDTO->toArray());
+
+            DB::commit(); // Подтверждаем транзакцию
+
+            return (new RoleResource($role))->response()->setStatusCode(201);
+        } catch (\Exception $e) {
+            DB::rollBack(); // Откатываем транзакцию в случае ошибки
+            return response()->json(['message' => 'Failed to store role'], 500);
+        }
     }
 
     /**
-     * Обновляет существующую роль на основе данных запроса.
+     * Обновление существующей роли
      */
     public function updateRole(UpdateRoleRequest $request, $id)
     {
-        $role = Role::findOrFail($id); // Находим роль по ID
-        $roleDTO = $request->toRoleDTO(); // Получаем DTO из запроса 
-        $role->update($roleDTO->toArray()); // Обновляем данные роли
+        DB::beginTransaction(); // Начинаем транзакцию
 
-        return response()->json(new RoleResource($role), 200);
+        try {
+            // Находим модель по ID
+            $role = Role::findOrFail($id);
+            $roleDTO = $request->toRoleDTO();  // Получение DTO из запроса
+            $role->update($roleDTO->toArray());
+
+            DB::commit(); // Подтверждаем транзакцию
+
+            return response()->json(new RoleResource($role), 200);
+        } catch (\Exception $e) {
+            DB::rollBack(); // Откатываем транзакцию в случае ошибки
+            return response()->json(['message' => 'Failed to update role'], 500);
+        }
     }
 
     /**
-     * Выполняет жесткое удаление роли по ID.
+     * Жесткое удаление роли по ID
      */
     public function destroyRole($id)
     {
-        $role = Role::find($id); // Находим роль по ID
+        DB::beginTransaction(); // Начинаем транзакцию
 
-        if (!$role) {
-            return response()->json(['message' => 'Role not found'], 404);
+        try {
+            // Находим роль по ID
+            $role = Role::find($id);
+
+            // Проверяем, существует ли роль
+            if (!$role) {
+                return response()->json(['message' => 'Role not found'], 404);
+            }
+
+            // Выполняем жесткое удаление
+            $role->forceDelete();
+
+            DB::commit(); // Подтверждаем транзакцию
+
+            return response()->json(['message' => 'Role permanently deleted'], 200);
+        } catch (\Exception $e) {
+            DB::rollBack(); // Откатываем транзакцию в случае ошибки
+            return response()->json(['message' => 'Failed to delete role'], 500);
         }
-
-        $role->forceDelete(); // Выполняем жесткое удаление
-
-        return response()->json(['message' => 'Role permanently deleted'], 200);
     }
 
     /**
-     * Выполняет мягкое удаление роли по ID.
+     * Мягкое удаление роли
      */
     public function softDeleteRole($id)
     {
-        $role = Role::find($id); // Находим роль по ID
-
+        // Находим роль по ID
+        $role = Role::find($id);
+        // Проверяем, существует ли роль
         if (!$role) {
             return response()->json(['message' => 'Role not found'], 404);
         }
 
-        $role->deleted_by = Auth::id(); // Устанавливаем текущего пользователя как удалившего
+        // Устанавливаем `deleted_by` текущим пользователем перед мягким удалением
+        $role->deleted_by = Auth::id();
         $role->save();
 
-        $role->delete(); // Выполняем мягкое удаление
-
+        $role->delete(); // Использует soft delete
         return response()->json(['message' => 'Role soft deleted'], 200);
     }
 
     /**
-     * Восстанавливает мягко удаленную роль по ID.
+     * Восстановление мягко удаленной роли
      */
     public function restoreRole($id)
     {
-        $role = Role::onlyTrashed()->findOrFail($id); // Находим удаленную роль по ID
-
+        $role = Role::onlyTrashed()->findOrFail($id);
+        // Проверяем, существует ли роль
         if (!$role) {
             return response()->json(['message' => 'Role not found'], 404);
         }
 
-        $role->deleted_by = null; // Сбрасываем поле удаления
+        // Сбрасываем поле `deleted_by`
+        $role->deleted_by = null;
         $role->save();
 
-        $role->restore(); // Восстанавливаем роль
-
+        $role->restore();
         return response()->json(['message' => 'Role restored'], 200);
+    }
+
+    /**
+     * Получение истории изменения записи роли по id
+     */
+    public function roleStory($entityId)
+    {
+        // Извлекаем все связи для конкретной роли по role_id
+        $roles = ChangeLog::where('entity_type', 'roles')
+            ->where('entity_id', $entityId)
+            ->get();
+
+        // Преобразуем коллекцию моделей RolePermission в массив DTO
+        $roleDTOs = $roles->map(function ($roleLog) {
+            return new ChangeLogDTO(
+                $roleLog->entity_type,
+                $roleLog->entity_id,
+                $roleLog->before,
+                $roleLog->after,
+                $roleLog->created_by,
+            );
+        })->toArray();
+
+        // Оборачиваем массив DTO в коллекцию RolePermissionCollectionDTO
+        $changeLogCollectionDTO = new ChangeLogCollectionDTO($roleDTOs);
+
+        return ($changeLogCollectionDTO->toArray() == null)
+            ? response()->json(['message' => 'Role not found'], 404)
+            : response()->json(new ChangeLogResource($changeLogCollectionDTO->toArray()), 200);
     }
 }
